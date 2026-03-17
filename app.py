@@ -480,7 +480,7 @@ def render_dashboard() -> None:
             selection = event.selection.rows if event and event.selection else []
             if selection:
                 selected_row = top_shortage_view.iloc[selection[0]]
-                render_plan_calendar_dialog(str(selected_row["품목코드"]), str(selected_row["색상"]))
+                render_plan_calendar_dialog(str(selected_row["정규화부품명"]), str(selected_row["색상"]))
     with right:
         st.subheader("품목별 현재 재공")
         inventory_summary_view = inventory_summary[inventory_summary["current_qty"] > 0].head(15).copy()
@@ -631,7 +631,7 @@ def render_vendor_share_page() -> None:
     selection = event.selection.rows if event and event.selection else []
     if selection:
         selected_row = vendor_view.iloc[selection[0]]
-        render_plan_calendar_dialog(str(selected_row["품목코드"]), str(selected_row["색상"]))
+        render_plan_calendar_dialog(str(selected_row["정규화부품명"]), str(selected_row["색상"]))
     st.download_button("외주 공유 CSV 다운로드", services.to_csv_bytes(vendor_view), "vendor_share.csv", "text/csv")
 
 
@@ -829,13 +829,13 @@ def render_admin_inventory() -> None:
                     num_rows="fixed",
                     column_config={
                         "제외": st.column_config.CheckboxColumn("제외"),
-                        "품목코드": st.column_config.TextColumn("품목코드", width="small"),
+                        "정규화부품명": st.column_config.TextColumn("정규화부품명", width="small"),
                         "색상": st.column_config.TextColumn("색상", width="small"),
                         "기존수량": st.column_config.NumberColumn("기존수량", format="%.0f"),
                         "현재재공": st.column_config.NumberColumn("실사후 수량", format="%.0f"),
                         "변경수량": st.column_config.NumberColumn("변경", format="%.0f"),
                     },
-                    disabled=["품목코드", "색상", "기존수량", "현재재공", "변경수량"],
+                    disabled=["정규화부품명", "색상", "기존수량", "현재재공", "변경수량"],
                     key="inventory_pending_editor",
                 )
                 excluded_rows = selected_pending[selected_pending["제외"]].copy()
@@ -845,7 +845,7 @@ def render_admin_inventory() -> None:
                     else:
                         revert_df = inventory_df.copy()
                         for _, row in excluded_rows.iterrows():
-                            item_code = str(row["품목코드"]).strip()
+                            item_code = str(row["정규화부품명"]).strip()
                             color = str(row["색상"]).strip()
                             baseline_match = baseline_inventory_df[
                                 (baseline_inventory_df["item_code"] == item_code) & (baseline_inventory_df["color"] == color)
