@@ -211,6 +211,11 @@ def get_vendor_share_view() -> pd.DataFrame:
 
     inventory = get_inventory_summary()[["item_code", "item_name", "color", "current_qty"]].rename(columns={"current_qty": "current_wip"})
     shortage = build_shortage_report()
+    for frame in (vendor_map, inventory, shortage):
+        if not frame.empty:
+            for column in ("item_code", "color", "vendor_name"):
+                if column in frame.columns:
+                    frame[column] = frame[column].fillna("").astype(str).str.strip()
     if shortage.empty:
         base = vendor_map.merge(inventory, how="left", on=["item_code", "color"])
         base["item_name"] = base["item_name"].fillna(base["item_code"])
