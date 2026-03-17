@@ -1,0 +1,6 @@
+.env
+data/
+__pycache__/
+*.pyc
+temp_input.xls
+.streamlit/secrets.toml
