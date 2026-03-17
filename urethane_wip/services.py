@@ -40,6 +40,11 @@ def get_locations() -> pd.DataFrame:
     return _table("locations", order_by="location_code")
 
 
+def _product_code_summary(values: pd.Series) -> str:
+    codes = sorted({str(value).strip() for value in values if str(value).strip()})
+    return ", ".join(codes)
+
+
 def get_inventory_detail() -> pd.DataFrame:
     inventory = _table("inventory", order_by="updated_at", ascending=False)
     if inventory.empty:
@@ -176,32 +181,38 @@ def build_shortage_report() -> pd.DataFrame:
     plans = get_plan_detail()
     active_plans = plans[plans["plan_status"] != "생산완료"].copy()
     if active_plans.empty:
-        return pd.DataFrame(columns=["item_code", "item_name", "color", "current_wip", "required_qty", "shortage_qty", "due_date", "shortage_date", "priority", "risk_level", "vendor_name", "remaining_after_due"])
+        return pd.DataFrame(columns=["item_code", "item_name", "color", "current_wip", "required_qty", "shortage_qty", "due_date", "shortage_date", "priority", "risk_level", "vendor_name", "remaining_after_due", "product_codes"])
+
+    active_plans["plan_date"] = pd.to_datetime(active_plans["plan_date"], errors="coerce")
+    active_plans["due_date"] = pd.to_datetime(active_plans["due_date"], errors="coerce")
+    active_plans["shortage_date"] = active_plans["plan_date"] - pd.Timedelta(days=1)
+    active_plans["today_required_qty"] = active_plans.apply(lambda row: row["required_qty"] if pd.notna(row["shortage_date"]) and row["shortage_date"].date() <= date.today() else 0, axis=1)
+    active_plans["d2_required_qty"] = active_plans.apply(lambda row: row["required_qty"] if pd.notna(row["shortage_date"]) and row["shortage_date"].date() <= date.today() + timedelta(days=2) else 0, axis=1)
 
     plan_summary = (
-        active_plans.groupby(["item_code", "item_name", "color", "plan_date", "due_date", "vendor_name"], dropna=False)
-        .agg(plan_qty=("plan_qty", "sum"), required_qty=("required_qty", "sum"), priority=("priority", lambda s: ",".join(sorted(set(map(str, s))))))
+        active_plans.groupby(["item_code", "item_name", "color"], dropna=False)
+        .agg(
+            required_qty=("required_qty", "sum"),
+            plan_qty=("plan_qty", "sum"),
+            due_date=("due_date", "min"),
+            shortage_date=("shortage_date", "min"),
+            required_today_cumulative=("today_required_qty", "sum"),
+            required_d2_cumulative=("d2_required_qty", "sum"),
+            required_total_qty=("required_qty", "sum"),
+            priority=("priority", _merge_priority_text),
+            vendor_name=("vendor_name", _merge_vendor_name),
+            product_codes=("product_code", _product_code_summary),
+        )
         .reset_index()
     )
     merged = plan_summary.merge(inventory, how="left", on=["item_code", "item_name", "color"])
     merged["current_wip"] = merged["current_wip"].fillna(0)
-    merged["plan_date"] = pd.to_datetime(merged["plan_date"], errors="coerce")
-    merged["due_date"] = pd.to_datetime(merged["due_date"], errors="coerce")
-    merged["shortage_date"] = merged["plan_date"] - pd.Timedelta(days=1)
-    merged = merged.sort_values(["item_code", "color", "shortage_date", "due_date"], ascending=[True, True, True, True]).reset_index(drop=True)
-    merged["cumulative_required_qty"] = merged.groupby(["item_code", "color"], dropna=False)["required_qty"].cumsum()
-    merged["today_required_qty"] = merged.apply(lambda row: row["required_qty"] if pd.notna(row["shortage_date"]) and row["shortage_date"].date() <= date.today() else 0, axis=1)
-    merged["d2_required_qty"] = merged.apply(lambda row: row["required_qty"] if pd.notna(row["shortage_date"]) and row["shortage_date"].date() <= date.today() + timedelta(days=2) else 0, axis=1)
-    merged["required_today_cumulative"] = merged.groupby(["item_code", "color"], dropna=False)["today_required_qty"].transform("sum")
-    merged["required_d2_cumulative"] = merged.groupby(["item_code", "color"], dropna=False)["d2_required_qty"].transform("sum")
-    merged["required_total_qty"] = merged.groupby(["item_code", "color"], dropna=False)["required_qty"].transform("sum")
-    merged["shortage_qty"] = (merged["cumulative_required_qty"] - merged["current_wip"]).clip(lower=0)
-    merged["remaining_after_due"] = (merged["current_wip"] - merged["cumulative_required_qty"]).clip(lower=0)
+    merged["shortage_qty"] = (merged["required_total_qty"] - merged["current_wip"]).clip(lower=0)
+    merged["remaining_after_due"] = (merged["current_wip"] - merged["required_total_qty"]).clip(lower=0)
     merged["risk_level"] = merged.apply(_risk_level_from_row, axis=1)
-    merged["plan_date"] = merged["plan_date"].dt.strftime("%Y-%m-%d")
-    merged["due_date"] = merged["due_date"].dt.strftime("%Y-%m-%d")
-    merged["shortage_date"] = merged["shortage_date"].dt.strftime("%Y-%m-%d")
-    return merged.sort_values(["risk_level", "shortage_date", "due_date", "item_code"], ascending=[True, True, True, True])
+    merged["due_date"] = pd.to_datetime(merged["due_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    merged["shortage_date"] = pd.to_datetime(merged["shortage_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    return merged[["item_code", "item_name", "color", "current_wip", "required_qty", "shortage_qty", "due_date", "shortage_date", "priority", "risk_level", "vendor_name", "remaining_after_due", "product_codes"]].sort_values(["risk_level", "shortage_date", "due_date", "item_code"], ascending=[True, True, True, True])
 
 
 def get_vendor_share_view() -> pd.DataFrame:
@@ -211,6 +222,7 @@ def get_vendor_share_view() -> pd.DataFrame:
 
     inventory = get_inventory_summary()[["item_code", "item_name", "color", "current_qty"]].rename(columns={"current_qty": "current_wip"})
     shortage = build_shortage_report()
+
     if shortage.empty:
         base = vendor_map.merge(inventory, how="left", on=["item_code", "color"])
         base["item_name"] = base["item_name"].fillna(base["item_code"])
@@ -285,17 +297,23 @@ def get_excess_inventory_without_plan() -> pd.DataFrame:
 def get_plan_calendar_entries(item_code: str, color: str) -> pd.DataFrame:
     plans = get_plan_detail()
     if plans.empty:
-        return pd.DataFrame(columns=["plan_date", "due_date", "plan_qty", "required_qty", "product_count"])
+        return pd.DataFrame(columns=["plan_date", "due_date", "plan_qty", "required_qty", "product_count", "product_codes"])
 
     filtered = plans[(plans["item_code"] == item_code) & (plans["color"].fillna("") == (color or "")) & (plans["plan_status"] != "생산완료")].copy()
     if filtered.empty:
-        return pd.DataFrame(columns=["plan_date", "due_date", "plan_qty", "required_qty", "product_count"])
+        return pd.DataFrame(columns=["plan_date", "due_date", "plan_qty", "required_qty", "product_count", "product_codes"])
 
     filtered["plan_date"] = pd.to_datetime(filtered["plan_date"], errors="coerce")
     filtered["due_date"] = pd.to_datetime(filtered["due_date"], errors="coerce")
     grouped = (
         filtered.groupby(["plan_date"], dropna=False)
-        .agg(due_date=("due_date", "min"), plan_qty=("plan_qty", "sum"), required_qty=("required_qty", "sum"), product_count=("product_code", "nunique"))
+        .agg(
+            due_date=("due_date", "min"),
+            plan_qty=("plan_qty", "sum"),
+            required_qty=("required_qty", "sum"),
+            product_count=("product_code", "nunique"),
+            product_codes=("product_code", _product_code_summary),
+        )
         .reset_index()
         .sort_values(["plan_date", "due_date"], ascending=[True, True])
     )
@@ -367,6 +385,19 @@ def _risk_level_from_row(row: pd.Series) -> str:
     return "정상"
 
 
+def _merge_priority_text(values: pd.Series) -> str:
+    order = {"긴급": 0, "높음": 1, "보통": 2}
+    unique_values = [str(value) for value in values if str(value)]
+    if not unique_values:
+        return "보통"
+    return min(unique_values, key=lambda value: order.get(value, 99))
+
+
+def _merge_vendor_name(values: pd.Series) -> str:
+    unique_values = sorted({str(value).strip() for value in values if str(value).strip()})
+    return ", ".join(unique_values)
+
+
 def _merge_risk_level(values: pd.Series) -> str:
     order = {"미출": 0, "주의": 1, "일정확인요망": 2, "과입고": 3, "정상": 4}
     unique_values = [str(value) for value in values if str(value)]
@@ -381,12 +412,12 @@ def save_item(item_code: str, item_name: str, category: str, spec: str, unit: st
     clear_caches()
 
 
-def ensure_item_variant(item_code: str, item_name: str, color: str, *, category: str = "우레탄", spec: str = "현장등록", unit: str = "EA", active_yn: str = "Y") -> None:
+def ensure_item_variant(item_code: str, item_name: str, color: str, *, category: str = "우레탄", spec: str = "수동등록", unit: str = "EA", active_yn: str = "Y") -> None:
     item_code_value = str(item_code or "").strip()
     item_name_value = str(item_name or item_code_value).strip() or item_code_value
     color_value = str(color or "").strip()
     if not item_code_value:
-        raise ValueError("품목코드는 비워둘 수 없습니다.")
+        raise ValueError("부품명은 비워둘 수 없습니다.")
 
     now = db.utcnow_text()
     db.upsert_rows(

@@ -178,7 +178,7 @@ def render_plan_calendar_dialog(item_code: str, color: str) -> None:
 
     with st.expander("일자별 상세 보기"):
         detail_view = _korean_table(
-            entries[["due_date", "plan_qty", "required_qty", "product_count"]].copy(),
+            entries[["due_date", "plan_qty", "required_qty", "product_count", "product_codes"]].copy(),
             rename_overrides={
                 "product_count": "제품코드수",
             },
@@ -348,8 +348,8 @@ def _korean_table(
     rename_overrides: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     column_map = {
-        "item_code": "품목코드",
-        "item_name": "품목명",
+        "item_code": "정규화부품명",
+        "item_name": "부품명",
         "color": "색상",
         "current_qty": "현재재공",
         "baseline_qty": "기존수량",
@@ -362,7 +362,7 @@ def _korean_table(
         "current_wip": "현재재공",
         "required_qty": "필요량",
         "shortage_qty": "부족량",
-        "due_date": "최초포장일",
+        "due_date": "포장일자",
         "vendor_name": "업체명",
         "risk_level": "위험도",
         "priority": "우선순위",
@@ -372,6 +372,7 @@ def _korean_table(
         "plan_status": "생산상태",
         "product_code": "제품코드",
         "product_name": "제품명",
+        "product_codes": "연관제품코드",
         "plan_qty": "계획량",
         "display_name": "표시명",
         "source_type": "원천구분",
@@ -479,7 +480,7 @@ def render_dashboard() -> None:
             selection = event.selection.rows if event and event.selection else []
             if selection:
                 selected_row = top_shortage_view.iloc[selection[0]]
-                render_plan_calendar_dialog(str(selected_row["품목코드"]), str(selected_row["색상"]))
+                render_plan_calendar_dialog(str(selected_row["정규화부품명"]), str(selected_row["색상"]))
     with right:
         st.subheader("품목별 현재 재공")
         inventory_summary_view = inventory_summary[inventory_summary["current_qty"] > 0].head(15).copy()
@@ -630,7 +631,7 @@ def render_vendor_share_page() -> None:
     selection = event.selection.rows if event and event.selection else []
     if selection:
         selected_row = vendor_view.iloc[selection[0]]
-        render_plan_calendar_dialog(str(selected_row["품목코드"]), str(selected_row["색상"]))
+        render_plan_calendar_dialog(str(selected_row["정규화부품명"]), str(selected_row["색상"]))
     st.download_button("외주 공유 CSV 다운로드", services.to_csv_bytes(vendor_view), "vendor_share.csv", "text/csv")
 
 
@@ -828,13 +829,13 @@ def render_admin_inventory() -> None:
                     num_rows="fixed",
                     column_config={
                         "제외": st.column_config.CheckboxColumn("제외"),
-                        "품목코드": st.column_config.TextColumn("품목코드", width="small"),
+                        "정규화부품명": st.column_config.TextColumn("정규화부품명", width="small"),
                         "색상": st.column_config.TextColumn("색상", width="small"),
                         "기존수량": st.column_config.NumberColumn("기존수량", format="%.0f"),
                         "현재재공": st.column_config.NumberColumn("실사후 수량", format="%.0f"),
                         "변경수량": st.column_config.NumberColumn("변경", format="%.0f"),
                     },
-                    disabled=["품목코드", "색상", "기존수량", "현재재공", "변경수량"],
+                    disabled=["정규화부품명", "색상", "기존수량", "현재재공", "변경수량"],
                     key="inventory_pending_editor",
                 )
                 excluded_rows = selected_pending[selected_pending["제외"]].copy()
@@ -844,7 +845,7 @@ def render_admin_inventory() -> None:
                     else:
                         revert_df = inventory_df.copy()
                         for _, row in excluded_rows.iterrows():
-                            item_code = str(row["품목코드"]).strip()
+                            item_code = str(row["정규화부품명"]).strip()
                             color = str(row["색상"]).strip()
                             baseline_match = baseline_inventory_df[
                                 (baseline_inventory_df["item_code"] == item_code) & (baseline_inventory_df["color"] == color)
