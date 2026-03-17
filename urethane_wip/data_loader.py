@@ -72,6 +72,9 @@ def parse_plan_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     product_code_col = _pick_first_existing(df, ["제품코드"])
     product_color_col = _pick_first_existing(df, ["제품색상"])
     product_name_col = _pick_first_existing(df, ["제품명"])
+    part_code_col = _pick_first_existing(df, ["부품코드"])
+    part_color_col = _pick_first_existing(df, ["부품색상"])
+    part_name_col = _pick_first_existing(df, ["부품명"])
     plan_qty_col = _pick_first_existing(df, ["계획량"])
     produced_qty_col = _pick_first_existing(df, ["생산수량"])
     remark_col = _pick_first_existing(df, ["건명"])
@@ -87,6 +90,9 @@ def parse_plan_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     filtered["product_code_norm"] = filtered[product_code_col].map(_normalize_text)
     filtered["color_norm"] = filtered[product_color_col].map(_normalize_text)
     filtered["product_name_norm"] = filtered[product_name_col].map(_normalize_text) if product_name_col else filtered["product_code_norm"]
+    filtered["part_code_norm"] = filtered[part_code_col].map(_normalize_text) if part_code_col else filtered["product_code_norm"]
+    filtered["part_color_norm"] = filtered[part_color_col].map(_normalize_text) if part_color_col else filtered["color_norm"]
+    filtered["part_name_norm"] = filtered[part_name_col].map(_normalize_text) if part_name_col else filtered["product_name_norm"]
     filtered["plan_date_norm"] = _coerce_date_text(filtered[first_input_date_col])
     filtered["due_date_norm"] = _coerce_date_text(filtered[package_date_col])
     filtered["plan_qty_norm"] = pd.to_numeric(filtered[plan_qty_col], errors="coerce")
@@ -95,7 +101,8 @@ def parse_plan_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     filtered = filtered[
         (filtered["business_key"] != "")
         & (filtered["product_code_norm"] != "")
-        & (filtered["color_norm"] != "")
+        & (filtered["part_code_norm"] != "")
+        & (filtered["part_color_norm"] != "")
         & filtered["plan_date_norm"].notna()
         & filtered["due_date_norm"].notna()
         & filtered["plan_qty_norm"].notna()
@@ -115,8 +122,9 @@ def parse_plan_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             "plan_date": filtered["plan_date_norm"],
             "product_code": filtered["product_code_norm"],
             "product_name": filtered["product_name_norm"],
-            "urethane_item_code": filtered["product_code_norm"],
-            "color": filtered["color_norm"],
+            "urethane_item_code": filtered["part_code_norm"],
+            "color": filtered["part_color_norm"],
+            "part_name": filtered["part_name_norm"],
             "plan_qty": filtered["plan_qty_norm"],
             "required_qty": filtered["required_qty"],
             "due_date": filtered["due_date_norm"],
@@ -140,6 +148,7 @@ def parse_plan_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             product_name=("product_name", "first"),
             urethane_item_code=("urethane_item_code", "first"),
             color=("color", "first"),
+            part_name=("part_name", "first"),
             plan_qty=("plan_qty", "sum"),
             required_qty=("required_qty", "sum"),
             due_date=("due_date", "max"),
@@ -237,10 +246,11 @@ def seed_database_if_needed() -> None:
 
 def _sync_plan_reference_data(normalized: pd.DataFrame) -> None:
     now = db.utcnow_text()
+    item_name_source = "part_name" if "part_name" in normalized.columns else "product_name"
     item_rows = (
-        normalized[["urethane_item_code", "product_name"]]
+        normalized[["urethane_item_code", item_name_source]]
         .drop_duplicates()
-        .rename(columns={"urethane_item_code": "item_code", "product_name": "item_name"})
+        .rename(columns={"urethane_item_code": "item_code", item_name_source: "item_name"})
         .assign(category="우레탄", spec="업로드", unit="EA", active_yn="Y", updated_at=now)
     )
     variant_rows = (

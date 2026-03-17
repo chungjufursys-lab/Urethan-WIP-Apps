@@ -74,6 +74,13 @@ def calculate_pallets(qty: float) -> int:
     return int(ceil(qty_value / 40))
 
 
+def normalize_quantity(qty: float | int | str | None) -> int:
+    qty_value = float(qty or 0)
+    if qty_value <= 0:
+        return 0
+    return int(round(qty_value))
+
+
 def get_inventory_input_sheet() -> pd.DataFrame:
     detail = get_inventory_detail()
     latest_records = pd.DataFrame(columns=["record_id", "base_date", "item_code", "color", "current_qty", "remark", "updated_at", "updated_by"])
@@ -200,7 +207,7 @@ def build_shortage_report() -> pd.DataFrame:
 def get_vendor_share_view() -> pd.DataFrame:
     vendor_map = get_item_vendor_map()
     if vendor_map.empty:
-        return vendor_map
+        return pd.DataFrame(columns=["vendor_name", "item_code", "item_name", "color", "current_wip", "required_qty", "risk_level"])
 
     inventory = get_inventory_summary()[["item_code", "item_name", "color", "current_qty"]].rename(columns={"current_qty": "current_wip"})
     shortage = build_shortage_report()
@@ -208,28 +215,29 @@ def get_vendor_share_view() -> pd.DataFrame:
         base = vendor_map.merge(inventory, how="left", on=["item_code", "color"])
         base["item_name"] = base["item_name"].fillna(base["item_code"])
         base["current_wip"] = base["current_wip"].fillna(0)
-        base["due_date"] = ""
         base["required_qty"] = 0.0
-        base["remaining_after_due"] = base["current_wip"]
-        base["shortage_qty"] = 0.0
         base["risk_level"] = "정상"
-        base["priority"] = "보통"
     else:
         base = vendor_map.merge(shortage, how="left", on=["item_code", "color", "vendor_name"])
         base = base.merge(inventory, how="left", on=["item_code", "color"], suffixes=("", "_inventory"))
         base["item_name"] = base["item_name"].fillna(base["item_name_inventory"]).fillna(base["item_code"])
         base["current_wip"] = base["current_wip"].fillna(0)
         base["required_qty"] = base["required_qty"].fillna(0)
-        base["remaining_after_due"] = base["remaining_after_due"].fillna(base["current_wip"])
-        base["shortage_qty"] = base["shortage_qty"].fillna(0)
         base["risk_level"] = base["risk_level"].fillna("정상")
-        base["priority"] = base["priority"].fillna("보통")
-        base["due_date"] = base["due_date"].fillna("")
 
-    base["current_pallet"] = base["current_wip"].apply(calculate_pallets)
-    base["required_pallet"] = base["required_qty"].apply(calculate_pallets)
-    base["shortage_pallet"] = base["shortage_qty"].apply(calculate_pallets)
-    return base[["vendor_name", "item_code", "item_name", "color", "due_date", "current_wip", "current_pallet", "required_qty", "required_pallet", "remaining_after_due", "shortage_qty", "shortage_pallet", "risk_level", "priority"]].sort_values(["vendor_name", "due_date", "item_code"], ascending=[True, True, True])
+    grouped = (
+        base.groupby(["vendor_name", "item_code", "item_name", "color"], dropna=False)
+        .agg(
+            current_wip=("current_wip", "max"),
+            required_qty=("required_qty", "sum"),
+            risk_level=("risk_level", _merge_risk_level),
+        )
+        .reset_index()
+    )
+    grouped["current_wip"] = grouped["current_wip"].fillna(0)
+    grouped["required_qty"] = grouped["required_qty"].fillna(0)
+    grouped["risk_level"] = grouped["risk_level"].fillna("정상")
+    return grouped[["vendor_name", "item_code", "item_name", "color", "required_qty", "current_wip", "risk_level"]].sort_values(["vendor_name", "risk_level", "item_code"], ascending=[True, True, True])
 
 
 def get_dashboard_metrics() -> dict[str, float | int]:
@@ -257,6 +265,23 @@ def get_due_soon_dashboard_report() -> pd.DataFrame:
     return filtered.sort_values(["risk_level", "shortage_date", "due_date", "item_code"], ascending=[True, True, True, True])
 
 
+def get_excess_inventory_without_plan() -> pd.DataFrame:
+    inventory = get_inventory_summary()
+    if inventory.empty:
+        return pd.DataFrame(columns=["item_code", "color", "current_qty", "pallet_count", "last_updated_at"])
+
+    active_plans = get_plan_detail()
+    if not active_plans.empty:
+        active_plans = active_plans[active_plans["plan_status"] != "생산완료"][["item_code", "color"]].drop_duplicates().copy()
+        inventory = inventory.merge(active_plans.assign(has_plan=True), how="left", on=["item_code", "color"])
+        inventory = inventory[inventory["has_plan"].isna()].drop(columns=["has_plan"])
+
+    inventory = inventory[inventory["current_qty"] > 0].copy()
+    if inventory.empty:
+        return pd.DataFrame(columns=["item_code", "color", "current_qty", "pallet_count", "last_updated_at"])
+    return inventory.sort_values(["current_qty", "item_code", "color"], ascending=[False, True, True])
+
+
 def get_plan_calendar_entries(item_code: str, color: str) -> pd.DataFrame:
     plans = get_plan_detail()
     if plans.empty:
@@ -279,6 +304,52 @@ def get_plan_calendar_entries(item_code: str, color: str) -> pd.DataFrame:
     return grouped
 
 
+def get_unmapped_item_variants() -> pd.DataFrame:
+    variants = get_item_variants()
+    items = get_items()
+    vendor_map = get_item_vendor_map()
+    plans = get_plan_detail()
+
+    variant_keys = variants[["item_code", "color"]].copy() if not variants.empty else pd.DataFrame(columns=["item_code", "color"])
+    plan_keys = plans[["item_code", "color"]].drop_duplicates().copy() if not plans.empty else pd.DataFrame(columns=["item_code", "color"])
+    base = pd.concat([variant_keys, plan_keys], ignore_index=True).drop_duplicates()
+    if base.empty:
+        return pd.DataFrame(columns=["item_code", "item_name", "color", "required_qty", "latest_due_date"])
+
+    if not vendor_map.empty:
+        vendor_keys = vendor_map[["item_code", "color"]].drop_duplicates().copy()
+        base = base.merge(vendor_keys.assign(mapped_flag=True), how="left", on=["item_code", "color"])
+        base = base[base["mapped_flag"].isna()].drop(columns=["mapped_flag"])
+
+    if base.empty:
+        return pd.DataFrame(columns=["item_code", "item_name", "color", "required_qty", "latest_due_date"])
+
+    item_names = items[["item_code", "item_name"]] if not items.empty else pd.DataFrame(columns=["item_code", "item_name"])
+    base = base.merge(item_names, how="left", on="item_code")
+    base["item_name"] = base["item_name"].fillna(base["item_code"])
+
+    if plans.empty:
+        base["required_qty"] = 0
+        base["latest_due_date"] = ""
+        return base[["item_code", "item_name", "color", "required_qty", "latest_due_date"]].sort_values(["item_code", "color"], ascending=[True, True])
+
+    active_plans = plans[plans["plan_status"] != "생산완료"].copy()
+    if active_plans.empty:
+        base["required_qty"] = 0
+        base["latest_due_date"] = ""
+        return base[["item_code", "item_name", "color", "required_qty", "latest_due_date"]].sort_values(["item_code", "color"], ascending=[True, True])
+
+    plan_summary = (
+        active_plans.groupby(["item_code", "color"], dropna=False)
+        .agg(required_qty=("required_qty", "sum"), latest_due_date=("due_date", "max"))
+        .reset_index()
+    )
+    base = base.merge(plan_summary, how="left", on=["item_code", "color"])
+    base["required_qty"] = base["required_qty"].fillna(0)
+    base["latest_due_date"] = base["latest_due_date"].fillna("")
+    return base[["item_code", "item_name", "color", "required_qty", "latest_due_date"]].sort_values(["latest_due_date", "item_code", "color"], ascending=[False, True, True])
+
+
 def _risk_level_from_row(row: pd.Series) -> str:
     current_wip = float(row.get("current_wip", 0) or 0)
     required_today = float(row.get("required_today_cumulative", 0) or 0)
@@ -296,9 +367,53 @@ def _risk_level_from_row(row: pd.Series) -> str:
     return "정상"
 
 
+def _merge_risk_level(values: pd.Series) -> str:
+    order = {"미출": 0, "주의": 1, "일정확인요망": 2, "과입고": 3, "정상": 4}
+    unique_values = [str(value) for value in values if str(value)]
+    if not unique_values:
+        return "정상"
+    return min(unique_values, key=lambda value: order.get(value, 99))
+
+
 def save_item(item_code: str, item_name: str, category: str, spec: str, unit: str, active_yn: str) -> None:
     now = db.utcnow_text()
     db.upsert_rows("items", [{"item_code": item_code, "item_name": item_name, "category": category, "spec": spec, "unit": unit, "active_yn": active_yn, "updated_at": now}], on_conflict="item_code")
+    clear_caches()
+
+
+def ensure_item_variant(item_code: str, item_name: str, color: str, *, category: str = "우레탄", spec: str = "현장등록", unit: str = "EA", active_yn: str = "Y") -> None:
+    item_code_value = str(item_code or "").strip()
+    item_name_value = str(item_name or item_code_value).strip() or item_code_value
+    color_value = str(color or "").strip()
+    if not item_code_value:
+        raise ValueError("품목코드는 비워둘 수 없습니다.")
+
+    now = db.utcnow_text()
+    db.upsert_rows(
+        "items",
+        [{
+            "item_code": item_code_value,
+            "item_name": item_name_value,
+            "category": category,
+            "spec": spec,
+            "unit": unit,
+            "active_yn": active_yn,
+            "updated_at": now,
+        }],
+        on_conflict="item_code",
+    )
+    if color_value:
+        db.upsert_rows(
+            "item_variants",
+            [{
+                "item_code": item_code_value,
+                "color": color_value,
+                "display_name": f"{item_code_value} / {color_value}",
+                "active_yn": active_yn,
+                "updated_at": now,
+            }],
+            on_conflict="item_code,color",
+        )
     clear_caches()
 
 
@@ -316,7 +431,7 @@ def save_location(location_code: str, location_name: str, area_type: str, capaci
 
 def save_inventory(record_id: int | None, base_date: str, item_code: str, color: str, qty: float, location_code: str, status: str, remark: str, updated_by: str) -> None:
     now = db.utcnow_text()
-    payload = {"base_date": base_date, "item_code": item_code, "color": color, "qty": qty, "location_code": location_code, "status": status, "remark": remark, "updated_by": updated_by, "updated_at": now}
+    payload = {"base_date": base_date, "item_code": item_code, "color": color, "qty": normalize_quantity(qty), "location_code": location_code, "status": status, "remark": remark, "updated_by": updated_by, "updated_at": now}
     if record_id:
         db.update_rows("inventory", {"id": record_id}, payload)
     else:
@@ -329,6 +444,62 @@ def save_inventory_snapshot(base_date: str, item_code: str, color: str, qty: flo
     existing = existing[(existing["item_code"] == item_code) & (existing["color"].fillna("") == (color or ""))].sort_values(["updated_at", "id"], ascending=[False, False])
     record_id = int(existing.iloc[0]["id"]) if not existing.empty else None
     save_inventory(record_id, base_date, item_code, color, qty, "TOTAL", "정상", remark, updated_by)
+
+
+def save_inventory_snapshots(base_date: str, rows: list[dict[str, object]], updated_by: str) -> None:
+    if not rows:
+        return
+
+    existing = get_inventory_detail()
+    existing_totals = pd.DataFrame(columns=["id", "item_code", "color"])
+    if not existing.empty:
+        existing_totals = (
+            existing[existing["location_code"] == "TOTAL"]
+            .sort_values(["updated_at", "id"], ascending=[False, False])
+            .drop_duplicates(subset=["item_code", "color"], keep="first")[["id", "item_code", "color"]]
+            .copy()
+        )
+        existing_totals["color"] = existing_totals["color"].fillna("")
+
+    record_map = {
+        (str(row["item_code"]).strip(), str(row["color"]).strip()): int(row["id"])
+        for _, row in existing_totals.iterrows()
+    }
+
+    now = db.utcnow_text()
+    payloads: list[dict[str, object]] = []
+    for row in rows:
+        item_code = str(row.get("item_code", "") or "").strip()
+        color = str(row.get("color", "") or "").strip()
+        if not item_code:
+            continue
+        payload: dict[str, object] = {
+            "base_date": base_date,
+            "item_code": item_code,
+            "color": color,
+            "qty": normalize_quantity(row.get("qty")),
+            "location_code": "TOTAL",
+            "status": "정상",
+            "remark": str(row.get("remark", "") or "").strip(),
+            "updated_by": updated_by,
+            "updated_at": now,
+        }
+        record_id = record_map.get((item_code, color))
+        if record_id:
+            payload["id"] = record_id
+        payloads.append(payload)
+
+    if not payloads:
+        return
+
+    update_rows = [payload for payload in payloads if "id" in payload]
+    insert_rows = [{key: value for key, value in payload.items() if key != "id"} for payload in payloads if "id" not in payload]
+
+    if update_rows:
+        db.upsert_rows("inventory", update_rows, on_conflict="id")
+    if insert_rows:
+        db.insert_rows("inventory", insert_rows)
+    clear_caches()
 
 
 def save_item_vendor_map(record_id: int | None, item_code: str, color: str, vendor_name: str) -> None:
