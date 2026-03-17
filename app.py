@@ -178,7 +178,7 @@ def render_plan_calendar_dialog(item_code: str, color: str) -> None:
 
     with st.expander("일자별 상세 보기"):
         detail_view = _korean_table(
-            entries[["due_date", "plan_qty", "required_qty", "product_count"]].copy(),
+            entries[["due_date", "plan_qty", "required_qty", "product_count", "product_codes"]].copy(),
             rename_overrides={
                 "product_count": "제품코드수",
             },
@@ -348,8 +348,8 @@ def _korean_table(
     rename_overrides: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     column_map = {
-        "item_code": "품목코드",
-        "item_name": "품목명",
+        "item_code": "정규화부품명",
+        "item_name": "부품명",
         "color": "색상",
         "current_qty": "현재재공",
         "baseline_qty": "기존수량",
@@ -362,7 +362,7 @@ def _korean_table(
         "current_wip": "현재재공",
         "required_qty": "필요량",
         "shortage_qty": "부족량",
-        "due_date": "최초포장일",
+        "due_date": "포장일자",
         "vendor_name": "업체명",
         "risk_level": "위험도",
         "priority": "우선순위",
@@ -372,6 +372,7 @@ def _korean_table(
         "plan_status": "생산상태",
         "product_code": "제품코드",
         "product_name": "제품명",
+        "product_codes": "연관제품코드",
         "plan_qty": "계획량",
         "display_name": "표시명",
         "source_type": "원천구분",
