@@ -7,12 +7,14 @@
 
 ## Files
 - SQL migration: [`migrations/20260317_create_code_mapping.sql`](/C:/Users/FURSYS/Desktop/Urethane_WIP_Manager/migrations/20260317_create_code_mapping.sql)
+- SQL migration: [`migrations/20260318_create_inventory_adjustment_history.sql`](/C:/Users/FURSYS/Desktop/Urethane_WIP_Manager/migrations/20260318_create_inventory_adjustment_history.sql)
 - Data rebuild script: [`scripts/rebuild_remote_state.py`](/C:/Users/FURSYS/Desktop/Urethane_WIP_Manager/scripts/rebuild_remote_state.py)
 
 ## Execution Order
 1. Supabase SQL Editor에서 `migrations/20260317_create_code_mapping.sql`을 실행한다.
-2. 로컬에서 `python scripts/rebuild_remote_state.py`를 실행한다.
-3. 앱에서 기본 계획 다시 불러오기와 업체 매핑 화면을 점검한다.
+2. Supabase SQL Editor에서 `migrations/20260318_create_inventory_adjustment_history.sql`을 실행한다.
+3. 로컬에서 `python scripts/rebuild_remote_state.py`를 실행한다.
+4. 앱에서 기본 계획 다시 불러오기와 업체 매핑 화면을 점검한다.
 
 ## Notes
 - 현재 환경에서는 Supabase DDL 자동 실행 권한을 확인하지 못해 SQL 파일을 직접 생성했다.

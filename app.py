@@ -597,7 +597,8 @@ def _build_upload_result_message(summary: dict[str, int]) -> str:
     return (
         f"진행중 {summary['active_count']}건 반영, "
         f"삭제 {summary['deleted_count']}건 처리, "
-        f"신규 {summary['inserted_count']}건, "
+        f"재고차감 {summary.get('deducted_qty', 0)}개, "
+        f"신규 {summary['inserted_count']}건 "
         f"업데이트 {summary['updated_count']}건"
     )
 

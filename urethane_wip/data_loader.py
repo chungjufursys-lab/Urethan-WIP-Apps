@@ -32,6 +32,20 @@ PLAN_COLUMNS = [
     "updated_by",
     "updated_at",
 ]
+INVENTORY_ADJUSTMENT_HISTORY_COLUMNS = [
+    "plan_id",
+    "business_key",
+    "item_code",
+    "color",
+    "plan_required_qty",
+    "requested_adjust_qty",
+    "applied_adjust_qty",
+    "inventory_before_qty",
+    "inventory_after_qty",
+    "reason",
+    "updated_by",
+    "updated_at",
+]
 MAPPING_COLUMNS = [
     "product_code",
     "product_name",
@@ -250,6 +264,105 @@ def _store_code_mapping(plan_df: pd.DataFrame) -> None:
         db.insert_rows("code_mapping", mapping_df.to_dict("records"))
 
 
+def _apply_inventory_deduction_for_deleted_plans(deleted_plans: pd.DataFrame, updated_by: str) -> int:
+    if deleted_plans.empty:
+        return 0
+
+    inventory = db.fetch_table("inventory")
+    if inventory.empty:
+        return 0
+
+    total_inventory = inventory[inventory["location_code"] == "TOTAL"].copy()
+    if total_inventory.empty:
+        return 0
+
+    total_inventory["item_code"] = total_inventory["item_code"].fillna("").astype(str).str.strip()
+    total_inventory["color"] = total_inventory["color"].fillna("").astype(str).str.strip()
+    total_inventory["qty"] = pd.to_numeric(total_inventory["qty"], errors="coerce").fillna(0).astype(int)
+    total_inventory["updated_at"] = total_inventory["updated_at"].fillna("")
+    latest_total = (
+        total_inventory.sort_values(["updated_at", "id"], ascending=[False, False])
+        .drop_duplicates(subset=["item_code", "color"], keep="first")
+        .copy()
+    )
+
+    total_record_map = {
+        (str(row["item_code"]).strip(), str(row["color"]).strip()): {
+            "id": int(row["id"]),
+            "qty": int(row["qty"]),
+        }
+        for _, row in latest_total.iterrows()
+    }
+    if not total_record_map:
+        return 0
+
+    deleted = deleted_plans.copy()
+    deleted["item_code"] = deleted["urethane_item_code"].fillna("").astype(str).str.strip()
+    deleted["color"] = deleted["color"].fillna("").astype(str).str.strip()
+    deleted["required_qty"] = pd.to_numeric(deleted["required_qty"], errors="coerce").fillna(0).astype(int)
+
+    now = db.utcnow_text()
+    total_applied_qty = 0
+    history_rows: list[dict[str, object]] = []
+
+    for _, row in deleted.iterrows():
+        item_code = row["item_code"]
+        if not item_code:
+            continue
+
+        color = row["color"]
+        requested_qty = int(row["required_qty"])
+        if requested_qty <= 0:
+            continue
+
+        record = total_record_map.get((item_code, color))
+        before_qty = int(record["qty"]) if record else 0
+        applied_qty = min(before_qty, requested_qty)
+        after_qty = before_qty - applied_qty
+
+        if record and applied_qty > 0:
+            db.update_rows(
+                "inventory",
+                {"id": int(record["id"])},
+                {
+                    "qty": after_qty,
+                    "remark": f"생산계획 업로드 삭제 차감 ({requested_qty})",
+                    "updated_by": updated_by,
+                    "updated_at": now,
+                },
+            )
+            record["qty"] = after_qty
+            total_applied_qty += applied_qty
+
+        history_rows.append(
+            {
+                "plan_id": int(row["id"]),
+                "business_key": str(row.get("business_key", "") or "").strip(),
+                "item_code": item_code,
+                "color": color,
+                "plan_required_qty": requested_qty,
+                "requested_adjust_qty": requested_qty,
+                "applied_adjust_qty": applied_qty,
+                "inventory_before_qty": before_qty,
+                "inventory_after_qty": after_qty,
+                "reason": "UPLOAD_DELETE_DEDUCT",
+                "updated_by": updated_by,
+                "updated_at": now,
+            }
+        )
+
+    if history_rows and _is_table_available("inventory_adjustment_history"):
+        db.insert_rows(
+            "inventory_adjustment_history",
+            [
+                {column: row[column] for column in INVENTORY_ADJUSTMENT_HISTORY_COLUMNS}
+                for row in history_rows
+            ],
+        )
+
+    return total_applied_qty
+
+
 def _derive_code_mapping() -> pd.DataFrame:
     if _is_table_available("code_mapping"):
         mapping = db.fetch_table("code_mapping")
@@ -374,7 +487,7 @@ def _sync_plan_reference_data(normalized: pd.DataFrame) -> None:
 def replace_production_plan(plan_df: pd.DataFrame, updated_by: str) -> dict[str, int]:
     normalized = plan_df.copy()
     if normalized.empty:
-        return {"active_count": 0, "deleted_count": 0, "inserted_count": 0, "updated_count": 0}
+        return {"active_count": 0, "deleted_count": 0, "inserted_count": 0, "updated_count": 0, "deducted_qty": 0}
 
     normalized["updated_by"] = updated_by
     normalized["updated_at"] = db.utcnow_text()
@@ -404,12 +517,16 @@ def replace_production_plan(plan_df: pd.DataFrame, updated_by: str) -> dict[str,
             db.insert_rows("production_plan", [payload])
 
     delete_ids: list[int] = []
+    deleted_rows: list[dict[str, object]] = []
     if not existing_upload.empty:
         for _, row in existing_upload.iterrows():
             if not row.get("business_key") or row["business_key"] not in uploaded_keys:
                 delete_ids.append(int(row["id"]))
+                deleted_rows.append(row.to_dict())
 
+    deducted_qty = 0
     if delete_ids:
+        deducted_qty = _apply_inventory_deduction_for_deleted_plans(pd.DataFrame(deleted_rows), updated_by)
         db.delete_rows_by_ids("production_plan", delete_ids)
 
     sync_item_vendor_map_from_csv()
@@ -422,4 +539,5 @@ def replace_production_plan(plan_df: pd.DataFrame, updated_by: str) -> dict[str,
         "deleted_count": int(len(delete_ids)),
         "inserted_count": inserted_count,
         "updated_count": updated_count,
+        "deducted_qty": int(deducted_qty),
     }
